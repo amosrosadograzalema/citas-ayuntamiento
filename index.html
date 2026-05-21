@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Citas Ayuntamiento — Google Calendar</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'DM Sans','Segoe UI',sans-serif;background:#F0F2F5;height:100vh;overflow:hidden}
+    ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:3px}
+    .btn{cursor:pointer;border:none;border-radius:8px;font-family:inherit;font-weight:500;transition:all 0.15s}
+    .btn:hover{filter:brightness(0.93)}.btn:active{transform:scale(0.97)}.btn:disabled{opacity:0.5;cursor:not-allowed}
+    .input{width:100%;padding:10px 12px;border:1.5px solid #E2E8F0;border-radius:8px;font-family:inherit;font-size:14px;color:#1E293B;outline:none;background:#F8FAFC;transition:border 0.15s}
+    .input:focus{border-color:#3B82F6;background:white}
+    select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2394A3B8' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+    textarea.input{resize:vertical;min-height:70px}
+    .tag{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}
+    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(4px)}
+    .modal{background:white;border-radius:16px;padding:28px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.2)}
+    .nav-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;cursor:pointer;transition:all 0.15s;color:#64748B;font-weight:500;font-size:14px}
+    .nav-item:hover{background:#E8EEF7;color:#1E3A8A}.nav-item.active{background:#1D4ED8;color:white}
+    .day-cell{cursor:pointer;border-radius:10px;transition:background 0.12s}.day-cell:hover{background:#E8EEF7!important}
+    .cita-pill{border-radius:4px;padding:2px 6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cita-pill:hover{opacity:0.8}
+    .stat-card{background:white;border-radius:14px;padding:18px 20px;flex:1;box-shadow:0 1px 3px rgba(0,0,0,0.06);border:1px solid #E8EEF7}
+    .table-row{border-bottom:1px solid #F1F5F9;transition:background 0.1s}.table-row:hover{background:#F8FAFC}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .spinner{width:18px;height:18px;border:2px solid #ffffff44;border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite;display:inline-block}
+    .toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:500;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.15);animation:slideIn 0.3s ease}
+    @keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+    .login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:24px;background:linear-gradient(135deg,#EFF6FF,#F0F2F5)}
+  </style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ─── CONFIG ───────────────────────────────────────────────
+const CLIENT_ID   = "212548880245-9dfie79sdfp4ar877tjuao5brkevf7vf.apps.googleusercontent.com";
+const SCOPES      = "https://www.googleapis.com/auth/calendar";
+const TRAMITES    = ["Padrón Municipal","Licencias de Obras","Registro Civil","Hacienda Local","Urbanismo","Servicios Sociales","Medio Ambiente","Atención al Ciudadano"];
+const HORAS       = ["09:00","09:30","10:00","10:30","11:00","11:30","12:00","12:30","13:00","16:00","16:30","17:00","17:30","18:00"];
+const MESES       = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const DIAS_SEMANA = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+const COLOR_MAP   = {pendiente:"#F59E0B",confirmada:"#10B981",cancelada:"#EF4444",completada:"#6366F1"};
+const BG_MAP      = {pendiente:"#FEF3C7",confirmada:"#D1FAE5",cancelada:"#FEE2E2",completada:"#EDE9FE"};
+const LABEL_MAP   = {pendiente:"Pendiente",confirmada:"Confirmada",cancelada:"Cancelada",completada:"Completada"};
+
+// ─── ESTADO GLOBAL ────────────────────────────────────────
+let accessToken = null;
+let calendarId  = "primary";
+let citas       = [];
+let state = {
+  view:"calendario", calView:"mes", loading:true, saving:false,
+  modal:null, selectedCita:null, selectedDate:null,
+  filtroTramite:"Todos", filtroEstado:"Todos", busqueda:"",
+  sidebarOpen:true, toast:null,
+  form:{nombre:"",dni:"",tramite:TRAMITES[0],fecha:"",hora:HORAS[0],estado:"pendiente",notas:""},
+  currentYear: new Date().getFullYear(), currentMonth: new Date().getMonth(),
+  weekStart: getMonday(new Date()),
+};
+
+function getMonday(d){ const c=new Date(d); const day=c.getDay()===0?6:c.getDay()-1; c.setDate(c.getDate()-day); return c; }
+function fmtDate(y,m,d){ return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
+function today(){ const t=new Date(); return fmtDate(t.getFullYear(),t.getMonth(),t.getDate()); }
+function parseFecha(str){ const [y,m,d]=str.split("-").map(Number); return {y,m:m-1,d}; }
+function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
+function firstDayOfMonth(y,m){ const d=new Date(y,m,1).getDay(); return d===0?6:d-1; }
+
+function showToast(msg,type="ok"){
+  state.toast={msg,type};
+  render();
+  setTimeout(()=>{state.toast=null;render();},3000);
+}
+
+// ─── GOOGLE CALENDAR API ──────────────────────────────────
+async function apiRequest(method, path, body=null){
+  const opts = {method, headers:{"Authorization":"Bearer "+accessToken,"Content-Type":"application/json"}};
+  if(body) opts.body = JSON.stringify(body);
+  const res = await fetch("https://www.googleapis.com/calendar/v3"+path, opts);
+  if(!res.ok){ const e=await res.json(); throw new Error(e.error?.message||"Error API"); }
+  return res.json();
+}
+
+function citaToEvent(cita){
+  const [h,min] = cita.hora.split(":").map(Number);
+  const {y,m,d} = parseFecha(cita.fecha);
+  const start = new Date(y,m,d,h,min);
+  const end   = new Date(y,m,d,h,min+30);
+  const pad   = n=>String(n).padStart(2,"0");
+  const fmtDT = dt=>`${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:00`;
+  return {
+    summary: `[${cita.tramite}] ${cita.nombre}`,
+    description: `DNI: ${cita.dni}\nEstado: ${LABEL_MAP[cita.estado]}\nTrámite: ${cita.tramite}${cita.notas?"\nNotas: "+cita.notas:""}`,
+    start:{dateTime: fmtDT(start), timeZone:"Europe/Madrid"},
+    end:  {dateTime: fmtDT(end),   timeZone:"Europe/Madrid"},
+    colorId: {pendiente:"5",confirmada:"2",cancelada:"11",completada:"9"}[cita.estado]||"1",
+    extendedProperties:{ private:{ tramite:cita.tramite, dni:cita.dni, nombre:cita.nombre, estado:cita.estado, hora:cita.hora, notas:cita.notas||"" } }
+  };
+}
+
+function eventToCita(ev){
+  const p = ev.extendedProperties?.private||{};
+  const fecha = ev.start?.dateTime?.split("T")[0] || ev.start?.date || "";
+  const hora  = p.hora || (ev.start?.dateTime?.split("T")[1]?.slice(0,5)) || "09:00";
+  return {
+    id: ev.id, nombre: p.nombre||ev.summary||"", dni: p.dni||"",
+    tramite: p.tramite||TRAMITES[0], fecha, hora,
+    estado: p.estado||"pendiente", notas: p.notas||""
+  };
+}
+
+async function loadCitas(){
+  state.loading=true; render();
+  try {
+    const now   = new Date(); now.setMonth(now.getMonth()-1);
+    const limit = new Date(); limit.setMonth(limit.getMonth()+3);
+    const data  = await apiRequest("GET",
+      `/calendars/${encodeURIComponent(calendarId)}/events?timeMin=${now.toISOString()}&timeMax=${limit.toISOString()}&singleEvents=true&maxResults=250&privateExtendedProperty=tramite`);
+    citas = (data.items||[]).map(eventToCita);
+  } catch(e){ showToast("Error al cargar: "+e.message,"error"); }
+  state.loading=false; render();
+}
+
+async function guardarCita(){
+  if(!state.form.nombre||!state.form.fecha||!state.form.hora){ showToast("Rellena los campos obligatorios","error"); return; }
+  state.saving=true; render();
+  try {
+    const ev = citaToEvent(state.form);
+    if(state.modal==="nueva"){
+      const created = await apiRequest("POST",`/calendars/${encodeURIComponent(calendarId)}/events`,ev);
+      citas.push(eventToCita(created));
+      showToast("✓ Cita creada en Google Calendar");
+    } else {
+      const updated = await apiRequest("PUT",`/calendars/${encodeURIComponent(calendarId)}/events/${state.selectedCita.id}`,ev);
+      citas = citas.map(c=>c.id===state.selectedCita.id?eventToCita(updated):c);
+      showToast("✓ Cita actualizada");
+    }
+    state.modal=null;
+  } catch(e){ showToast("Error: "+e.message,"error"); }
+  state.saving=false; render();
+}
+
+async function eliminarCita(id){
+  state.saving=true; render();
+  try {
+    await apiRequest("DELETE",`/calendars/${encodeURIComponent(calendarId)}/events/${id}`);
+    citas = citas.filter(c=>c.id!==id);
+    showToast("Cita eliminada");
+    state.modal=null;
+  } catch(e){ showToast("Error: "+e.message,"error"); }
+  state.saving=false; render();
+}
+
+async function cancelarCita(id){
+  state.saving=true; render();
+  try {
+    const cita = {...citas.find(c=>c.id===id), estado:"cancelada"};
+    const updated = await apiRequest("PUT",`/calendars/${encodeURIComponent(calendarId)}/events/${id}`,citaToEvent(cita));
+    citas = citas.map(c=>c.id===id?eventToCita(updated):c);
+    showToast("Cita cancelada");
+    state.modal=null;
+  } catch(e){ showToast("Error: "+e.message,"error"); }
+  state.saving=false; render();
+}
+
+// ─── AUTH ─────────────────────────────────────────────────
+function initAuth(){
+  const client = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPES,
+    callback: async(resp)=>{
+      if(resp.error){ showToast("Error de acceso: "+resp.error,"error"); return; }
+      accessToken = resp.access_token;
+      await loadCitas();
+    }
+  });
+  window._googleClient = client;
+  render();
+}
+
+function login(){ window._googleClient?.requestAccessToken(); }
+
+// ─── RENDER ───────────────────────────────────────────────
+function render(){
+  const app = document.getElementById("app");
+  if(!accessToken){
+    app.innerHTML = `
+      <div class="login-screen">
+        <div style="background:white;border-radius:20px;padding:48px 40px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.1);max-width:400px;width:90%">
+          <div style="width:64px;height:64px;background:linear-gradient(135deg,#1D4ED8,#3B82F6);border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 20px">🏛️</div>
+          <h1 style="font-size:22px;font-weight:700;color:#0F172A;margin-bottom:8px">Gestión de Citas</h1>
+          <p style="color:#64748B;font-size:14px;margin-bottom:32px">Ayuntamiento de Grazalema<br>Inicia sesión con tu cuenta Google</p>
+          <button class="btn" onclick="login()" style="width:100%;padding:14px;background:#1D4ED8;color:white;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#FFF" d="M44.5 20H24v8.5h11.8C34.7 33.9 30.1 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 4.1 29.6 2 24 2 11.8 2 2 11.8 2 24s9.8 22 22 22c11 0 21-8 21-22 0-1.3-.2-2.7-.5-4z"/></svg>
+            Iniciar sesión con Google
+          </button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const todayStr = today();
+  const citasMap = {};
+  citas.forEach(c=>{ if(!citasMap[c.fecha]) citasMap[c.fecha]=[]; citasMap[c.fecha].push(c); });
+
+  const filtradas = citas.filter(c=>{
+    const t = state.filtroTramite==="Todos"||c.tramite===state.filtroTramite;
+    const e = state.filtroEstado==="Todos"||c.estado===state.filtroEstado;
+    const b = !state.busqueda||c.nombre.toLowerCase().includes(state.busqueda.toLowerCase())||c.dni.toLowerCase().includes(state.busqueda.toLowerCase());
+    return t&&e&&b;
+  });
+
+  const statsHoy   = citas.filter(c=>c.fecha===todayStr).length;
+  const statsPend  = citas.filter(c=>c.estado==="pendiente").length;
+  const statsConf  = citas.filter(c=>c.estado==="confirmada").length;
+  const statsMes   = citas.filter(c=>{ const {m,y}=parseFecha(c.fecha); return m===state.currentMonth&&y===state.currentYear; }).length;
+
+  app.innerHTML = `
+  <div style="display:flex;height:100vh;overflow:hidden;font-family:'DM Sans',sans-serif">
+
+    ${state.sidebarOpen?`
+    <div style="width:240px;background:white;display:flex;flex-direction:column;padding:24px 14px;border-right:1px solid #E8EEF7;flex-shrink:0">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:32px;padding-left:6px">
+        <div style="width:36px;height:36px;background:linear-gradient(135deg,#1D4ED8,#3B82F6);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px">🏛️</div>
+        <div><div style="font-weight:700;font-size:14px;color:#0F172A">Ayuntamiento</div><div style="font-size:11px;color:#94A3B8">Gestión de Citas</div></div>
+      </div>
+      <div style="margin-bottom:8px;padding-left:6px;font-size:11px;font-weight:700;color:#94A3B8;letter-spacing:0.08em;text-transform:uppercase">Principal</div>
+      <nav style="display:flex;flex-direction:column;gap:2px;margin-bottom:24px">
+        <div class="nav-item ${state.view==="calendario"?"active":""}" onclick="setView('calendario')"><span>📅</span>Calendario</div>
+        <div class="nav-item ${state.view==="listado"?"active":""}" onclick="setView('listado')"><span>📋</span>Todas las Citas</div>
+      </nav>
+      <div style="margin-bottom:8px;padding-left:6px;font-size:11px;font-weight:700;color:#94A3B8;letter-spacing:0.08em;text-transform:uppercase">Trámites</div>
+      <div style="display:flex;flex-direction:column;gap:2px;flex:1;overflow-y:auto">
+        ${["Todos",...TRAMITES].map(t=>`
+        <div class="nav-item ${state.filtroTramite===t&&state.view==="listado"?"active":""}" style="font-size:13px" onclick="setFiltro('${t}')">
+          <span style="width:6px;height:6px;border-radius:50%;background:${state.filtroTramite===t?"currentColor":"#CBD5E1"};flex-shrink:0"></span>
+          ${t==="Todos"?"Todos los trámites":t}
+        </div>`).join("")}
+      </div>
+      <div style="margin-top:auto;padding-top:16px;border-top:1px solid #F1F5F9;display:flex;flex-direction:column;gap:8px">
+        <button class="btn" onclick="openNueva('${todayStr}')" style="width:100%;padding:11px;background:#1D4ED8;color:white;font-size:14px">＋ Nueva Cita</button>
+        <button class="btn" onclick="loadCitas()" style="width:100%;padding:8px;background:#F1F5F9;color:#64748B;font-size:13px">🔄 Actualizar</button>
+      </div>
+    </div>`:""}
+
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <div style="background:white;border-bottom:1px solid #E8EEF7;padding:14px 24px;display:flex;align-items:center;gap:16px">
+        <button class="btn" onclick="toggleSidebar()" style="padding:7px 10px;background:#F1F5F9;color:#64748B;font-size:16px">☰</button>
+        <div>
+          <h1 style="font-size:18px;font-weight:700;color:#0F172A">${state.view==="calendario"?"Calendario de Citas":"Gestión de Citas"}</h1>
+          <div style="font-size:12px;color:#94A3B8">${new Date().toLocaleDateString("es-ES",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
+          ${state.view==="calendario"?`
+          <div style="display:flex;background:#F1F5F9;border-radius:8px;padding:3px;gap:2px">
+            <button class="btn" onclick="setCalView('mes')" style="padding:6px 14px;font-size:13px;background:${state.calView==="mes"?"white":"transparent"};color:${state.calView==="mes"?"#1D4ED8":"#64748B"};box-shadow:${state.calView==="mes"?"0 1px 3px rgba(0,0,0,0.1)":"none"}">Mes</button>
+            <button class="btn" onclick="setCalView('semana')" style="padding:6px 14px;font-size:13px;background:${state.calView==="semana"?"white":"transparent"};color:${state.calView==="semana"?"#1D4ED8":"#64748B"};box-shadow:${state.calView==="semana"?"0 1px 3px rgba(0,0,0,0.1)":"none"}">Semana</button>
+          </div>`:""}
+          <button class="btn" onclick="openNueva('${todayStr}')" style="padding:8px 16px;background:#1D4ED8;color:white;font-size:14px">＋ Nueva Cita</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;padding:16px 24px 0">
+        ${[
+          {label:"Citas hoy",value:statsHoy,icon:"☀️",color:"#F59E0B"},
+          {label:"Pendientes",value:statsPend,icon:"⏳",color:"#F59E0B"},
+          {label:"Confirmadas",value:statsConf,icon:"✅",color:"#10B981"},
+          {label:`Citas en ${MESES[state.currentMonth]}`,value:statsMes,icon:"📅",color:"#6366F1"},
+        ].map(s=>`
+        <div class="stat-card" style="display:flex;align-items:center;gap:14px">
+          <div style="width:42px;height:42px;border-radius:12px;background:${s.color}1A;display:flex;align-items:center;justify-content:center;font-size:20px">${s.icon}</div>
+          <div><div style="font-size:22px;font-weight:700;color:#0F172A">${s.value}</div><div style="font-size:12px;color:#64748B">${s.label}</div></div>
+        </div>`).join("")}
+      </div>
+
+      <div style="flex:1;overflow:auto;padding:16px 24px 24px">
+        ${state.loading?`<div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:#64748B"><div style="width:32px;height:32px;border:3px solid #BFDBFE;border-top-color:#1D4ED8;border-radius:50%;animation:spin 0.8s linear infinite"></div>Cargando citas...</div>`:
+          state.view==="calendario"&&state.calView==="mes"?renderMes(citasMap,todayStr):
+          state.view==="calendario"&&state.calView==="semana"?renderSemana(citasMap,todayStr):
+          renderListado(filtradas)}
+      </div>
+    </div>
+
+    ${state.selectedDate&&state.view==="calendario"?renderPanelDia(citasMap,state.selectedDate):""}
+  </div>
+
+  ${renderModal()}
+  ${state.toast?`<div class="toast" style="background:${state.toast.type==="error"?"#EF4444":"#10B981"};color:white">${state.toast.msg}</div>`:""}`;
+}
+
+function renderMes(citasMap,todayStr){
+  const {currentYear:y,currentMonth:m} = state;
+  const days = daysInMonth(y,m), first = firstDayOfMonth(y,m);
+  const cells = Array(first).fill(null).concat(Array.from({length:days},(_,i)=>i+1));
+  return `
+  <div style="background:white;border-radius:16px;border:1px solid #E8EEF7;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #F1F5F9">
+      <button class="btn" onclick="prevMonth()" style="padding:7px 12px;background:#F1F5F9;color:#64748B;font-size:16px">‹</button>
+      <h2 style="font-size:18px;font-weight:700;color:#0F172A">${MESES[m]} ${y}</h2>
+      <button class="btn" onclick="nextMonth()" style="padding:7px 12px;background:#F1F5F9;color:#64748B;font-size:16px">›</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);border-bottom:1px solid #F1F5F9">
+      ${DIAS_SEMANA.map(d=>`<div style="text-align:center;padding:10px 0;font-size:12px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:0.05em">${d}</div>`).join("")}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);padding:12px;gap:4px">
+      ${cells.map((day,i)=>{
+        if(!day) return `<div></div>`;
+        const ds = fmtDate(y,m,day);
+        const dc = citasMap[ds]||[];
+        const isT = ds===todayStr, isSel = ds===state.selectedDate;
+        return `<div class="day-cell${isT?" today":""}" onclick="selectDate('${ds}')"
+          style="min-height:80px;padding:8px;background:${isT?"#1D4ED8":isSel?"#DBEAFE":"transparent"}">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px;color:${isT?"white":"#1E293B"}">${day}</div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            ${dc.slice(0,3).map(c=>`<div class="cita-pill" onclick="event.stopPropagation();openDetalle_id('${c.id}')"
+              style="background:${BG_MAP[c.estado]};color:${COLOR_MAP[c.estado]}">${c.hora} ${c.nombre.split(" ")[0]}</div>`).join("")}
+            ${dc.length>3?`<div style="font-size:11px;color:#94A3B8;padding-left:6px">+${dc.length-3} más</div>`:""}
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+  </div>`;
+}
+
+function renderSemana(citasMap,todayStr){
+  const week = Array.from({length:7},(_,i)=>{ const d=new Date(state.weekStart); d.setDate(d.getDate()+i); return d; });
+  return `
+  <div style="background:white;border-radius:16px;border:1px solid #E8EEF7;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #F1F5F9">
+      <button class="btn" onclick="prevWeek()" style="padding:7px 12px;background:#F1F5F9;color:#64748B;font-size:16px">‹</button>
+      <h2 style="font-size:16px;font-weight:700;color:#0F172A">
+        ${week[0].toLocaleDateString("es-ES",{day:"numeric",month:"short"})} — ${week[6].toLocaleDateString("es-ES",{day:"numeric",month:"short",year:"numeric"})}
+      </h2>
+      <button class="btn" onclick="nextWeek()" style="padding:7px 12px;background:#F1F5F9;color:#64748B;font-size:16px">›</button>
+    </div>
+    <div style="display:flex">
+      ${week.map((date,i)=>{
+        const ds = fmtDate(date.getFullYear(),date.getMonth(),date.getDate());
+        const dc = (citasMap[ds]||[]).sort((a,b)=>a.hora.localeCompare(b.hora));
+        const isT = ds===todayStr, isW = i>=5;
+        return `<div style="flex:1;min-width:0;border-right:${i<6?"1px solid #F1F5F9":"none"};background:${isW?"#FAFBFC":"white"}">
+          <div style="padding:12px 10px;text-align:center;border-bottom:1px solid #F1F5F9;background:${isT?"#EFF6FF":"transparent"}">
+            <div style="font-size:11px;font-weight:700;color:${isT?"#1D4ED8":"#94A3B8"};text-transform:uppercase">${DIAS_SEMANA[i]}</div>
+            <div style="font-size:18px;font-weight:700;color:${isT?"#1D4ED8":"#0F172A"};margin-top:2px">${date.getDate()}</div>
+          </div>
+          <div style="padding:8px;min-height:180px;display:flex;flex-direction:column;gap:6px">
+            ${dc.map(c=>`<div onclick="openDetalle_id('${c.id}')"
+              style="background:${BG_MAP[c.estado]};border-left:3px solid ${COLOR_MAP[c.estado]};border-radius:6px;padding:6px 8px;cursor:pointer;font-size:12px">
+              <div style="font-weight:700;color:${COLOR_MAP[c.estado]}">${c.hora}</div>
+              <div style="font-weight:500;color:#1E293B;font-size:11px">${c.nombre.split(" ")[0]}</div>
+              <div style="color:#64748B;font-size:10px">${c.tramite}</div>
+            </div>`).join("")}
+            <div onclick="openNueva('${ds}')" style="border:1.5px dashed #E2E8F0;border-radius:6px;padding:6px;text-align:center;cursor:pointer;font-size:11px;color:#CBD5E1"
+              onmouseover="this.style.borderColor='#93C5FD';this.style.color='#3B82F6'" onmouseout="this.style.borderColor='#E2E8F0';this.style.color='#CBD5E1'">＋</div>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+  </div>`;
+}
+
+function renderListado(filtradas){
+  return `
+  <div>
+    <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="position:relative;flex:1;min-width:200px">
+        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94A3B8">🔍</span>
+        <input class="input" value="${state.busqueda}" oninput="setBusqueda(this.value)" placeholder="Buscar por nombre o DNI..." style="padding-left:34px;background:white"/>
+      </div>
+      <select class="input" onchange="setFiltroEstado(this.value)" style="width:160px;background:white">
+        ${["Todos","pendiente","confirmada","cancelada","completada"].map(e=>`<option value="${e}" ${state.filtroEstado===e?"selected":""}>${e==="Todos"?"Todos los estados":LABEL_MAP[e]}</option>`).join("")}
+      </select>
+    </div>
+    <div style="background:white;border-radius:14px;border:1px solid #E8EEF7;overflow:hidden">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#F8FAFC">
+          ${["Ciudadano","DNI","Trámite","Fecha y Hora","Estado","Acciones"].map(h=>`<th style="padding:12px 16px;text-align:left;font-size:11px;font-weight:700;color:#64748B;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #E8EEF7">${h}</th>`).join("")}
+        </tr></thead>
+        <tbody>
+          ${filtradas.length===0?`<tr><td colspan="6" style="padding:40px;text-align:center;color:#94A3B8">No se encontraron citas</td></tr>`:""}
+          ${[...filtradas].sort((a,b)=>a.fecha.localeCompare(b.fecha)||a.hora.localeCompare(b.hora)).map(c=>`
+          <tr class="table-row">
+            <td style="padding:12px 16px;font-weight:600;font-size:14px;color:#0F172A">${c.nombre}</td>
+            <td style="padding:12px 16px;font-size:13px;color:#64748B">${c.dni}</td>
+            <td style="padding:12px 16px;font-size:13px;color:#374151">${c.tramite}</td>
+            <td style="padding:12px 16px;font-size:13px;color:#374151">
+              ${(()=>{const{y,m,d}=parseFecha(c.fecha);return new Date(y,m,d).toLocaleDateString("es-ES",{day:"numeric",month:"short"});})()}
+              · <span style="color:#1D4ED8;font-weight:600">${c.hora}</span>
+            </td>
+            <td style="padding:12px 16px"><span class="tag" style="background:${BG_MAP[c.estado]};color:${COLOR_MAP[c.estado]}">${LABEL_MAP[c.estado]}</span></td>
+            <td style="padding:12px 16px">
+              <div style="display:flex;gap:6px">
+                <button class="btn" onclick="openDetalle_id('${c.id}')" style="padding:5px 10px;background:#EFF6FF;color:#1D4ED8;font-size:12px">Ver</button>
+                <button class="btn" onclick="openEditar_id('${c.id}')" style="padding:5px 10px;background:#F1F5F9;color:#475569;font-size:12px">Editar</button>
+              </div>
+            </td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+      <div style="padding:10px 16px;border-top:1px solid #F1F5F9;font-size:12px;color:#94A3B8">${filtradas.length} cita${filtradas.length!==1?"s":""} encontrada${filtradas.length!==1?"s":""}</div>
+    </div>
+  </div>`;
+}
+
+function renderPanelDia(citasMap,fecha){
+  const dc = (citasMap[fecha]||[]).sort((a,b)=>a.hora.localeCompare(b.hora));
+  const {y,m,d} = parseFecha(fecha);
+  return `
+  <div style="width:300px;background:white;border-left:1px solid #E8EEF7;display:flex;flex-direction:column;padding:20px;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+      <div>
+        <div style="font-weight:700;color:#0F172A;font-size:15px">${new Date(y,m,d).toLocaleDateString("es-ES",{weekday:"long",day:"numeric",month:"long"})}</div>
+        <div style="font-size:12px;color:#94A3B8">${dc.length} citas</div>
+      </div>
+      <button class="btn" onclick="selectDate(null)" style="padding:4px 8px;background:#F1F5F9;color:#64748B;font-size:16px">✕</button>
+    </div>
+    <button class="btn" onclick="openNueva('${fecha}')" style="width:100%;padding:9px;background:#EFF6FF;color:#1D4ED8;font-size:13px;margin-bottom:16px;border:1.5px dashed #BFDBFE">＋ Añadir cita</button>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${dc.length===0?`<div style="text-align:center;padding:30px 0;color:#94A3B8;font-size:13px">Sin citas este día</div>`:""}
+      ${dc.map(c=>`
+      <div onclick="openDetalle_id('${c.id}')" style="background:#F8FAFC;border-radius:10px;padding:12px;cursor:pointer;border:1px solid #E8EEF7"
+        onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.08)'" onmouseout="this.style.boxShadow='none'">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-weight:600;font-size:13px;color:#0F172A">${c.hora}</span>
+          <span class="tag" style="background:${BG_MAP[c.estado]};color:${COLOR_MAP[c.estado]};font-size:11px">${LABEL_MAP[c.estado]}</span>
+        </div>
+        <div style="font-weight:500;font-size:13px;color:#1E293B;margin-bottom:2px">${c.nombre}</div>
+        <div style="font-size:12px;color:#64748B">${c.tramite}</div>
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+
+function renderModal(){
+  if(!state.modal) return "";
+  const {modal,selectedCita,form,saving} = state;
+  if(modal==="detalle"&&selectedCita){
+    const c=selectedCita;
+    const {y,m,d}=parseFecha(c.fecha);
+    return `<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
+        <div><h2 style="font-size:20px;font-weight:700;color:#0F172A">${c.nombre}</h2><div style="font-size:13px;color:#64748B">DNI: ${c.dni}</div></div>
+        <button class="btn" onclick="closeModal()" style="padding:6px 10px;background:#F1F5F9;color:#64748B">✕</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        ${[
+          {l:"Trámite",v:c.tramite},
+          {l:"Estado",v:`<span class="tag" style="background:${BG_MAP[c.estado]};color:${COLOR_MAP[c.estado]}">${LABEL_MAP[c.estado]}</span>`},
+          {l:"Fecha",v:new Date(y,m,d).toLocaleDateString("es-ES",{weekday:"short",day:"numeric",month:"long",year:"numeric"})},
+          {l:"Hora",v:c.hora},
+        ].map(f=>`<div style="background:#F8FAFC;border-radius:8px;padding:10px 12px">
+          <div style="font-size:11px;color:#94A3B8;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px">${f.l}</div>
+          <div style="font-size:14px;font-weight:500;color:#1E293B">${f.v}</div>
+        </div>`).join("")}
+      </div>
+      ${c.notas?`<div style="background:#F8FAFC;border-radius:8px;padding:10px 12px;margin-bottom:16px">
+        <div style="font-size:11px;color:#94A3B8;font-weight:600;text-transform:uppercase;margin-bottom:4px">Notas</div>
+        <div style="font-size:14px;color:#1E293B">${c.notas}</div>
+      </div>`:""}
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="openEditar_id('${c.id}')" ${saving?"disabled":""} style="flex:1;padding:10px;background:#1D4ED8;color:white;font-size:14px">✏️ Editar</button>
+        <button class="btn" onclick="cancelarCita('${c.id}')" ${saving?"disabled":""} style="flex:1;padding:10px;background:#FEF3C7;color:#92400E;font-size:14px">⏸ Cancelar</button>
+        <button class="btn" onclick="eliminarCita('${c.id}')" ${saving?"disabled":""} style="padding:10px 14px;background:#FEE2E2;color:#991B1B;font-size:14px">🗑️</button>
+      </div>
+    </div></div>`;
+  }
+  if(modal==="nueva"||modal==="editar"){
+    return `<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px">
+        <h2 style="font-size:18px;font-weight:700;color:#0F172A">${modal==="nueva"?"Nueva Cita":"Editar Cita"}</h2>
+        <button class="btn" onclick="closeModal()" style="padding:6px 10px;background:#F1F5F9;color:#64748B">✕</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">NOMBRE *</label>
+            <input class="input" value="${form.nombre}" oninput="updateForm('nombre',this.value)" placeholder="Nombre y apellidos"/></div>
+          <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">DNI / NIE</label>
+            <input class="input" value="${form.dni}" oninput="updateForm('dni',this.value)" placeholder="12345678A"/></div>
+        </div>
+        <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">TRÁMITE *</label>
+          <select class="input" onchange="updateForm('tramite',this.value)">
+            ${TRAMITES.map(t=>`<option value="${t}" ${form.tramite===t?"selected":""}>${t}</option>`).join("")}
+          </select></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">FECHA *</label>
+            <input type="date" class="input" value="${form.fecha}" onchange="updateForm('fecha',this.value)"/></div>
+          <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">HORA *</label>
+            <select class="input" onchange="updateForm('hora',this.value)">
+              ${HORAS.map(h=>`<option value="${h}" ${form.hora===h?"selected":""}>${h}</option>`).join("")}
+            </select></div>
+        </div>
+        <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">ESTADO</label>
+          <select class="input" onchange="updateForm('estado',this.value)">
+            ${Object.entries(LABEL_MAP).map(([k,v])=>`<option value="${k}" ${form.estado===k?"selected":""}>${v}</option>`).join("")}
+          </select></div>
+        <div><label style="font-size:12px;font-weight:600;color:#64748B;display:block;margin-bottom:5px">NOTAS</label>
+          <textarea class="input" oninput="updateForm('notas',this.value)" placeholder="Observaciones...">${form.notas}</textarea></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="closeModal()" style="flex:1;padding:11px;background:#F1F5F9;color:#64748B;font-size:14px">Cancelar</button>
+          <button class="btn" onclick="guardarCita()" ${saving?"disabled":""} style="flex:2;padding:11px;background:#1D4ED8;color:white;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px">
+            ${saving?`<div class="spinner"></div> Guardando...`:modal==="nueva"?"✓ Crear Cita":"✓ Guardar Cambios"}
+          </button>
+        </div>
+      </div>
+    </div></div>`;
+  }
+  return "";
+}
+
+// ─── HANDLERS ─────────────────────────────────────────────
+function setView(v){ state.view=v; render(); }
+function setCalView(v){ state.calView=v; render(); }
+function toggleSidebar(){ state.sidebarOpen=!state.sidebarOpen; render(); }
+function selectDate(d){ state.selectedDate=d; render(); }
+function closeModal(){ state.modal=null; render(); }
+function setBusqueda(v){ state.busqueda=v; render(); }
+function setFiltroEstado(v){ state.filtroEstado=v; render(); }
+function setFiltro(t){ state.filtroTramite=t; state.view="listado"; render(); }
+function updateForm(k,v){ state.form={...state.form,[k]:v}; render(); }
+function openNueva(fecha){ state.form={nombre:"",dni:"",tramite:TRAMITES[0],fecha,hora:HORAS[0],estado:"pendiente",notas:""}; state.modal="nueva"; render(); }
+function openDetalle_id(id){ state.selectedCita=citas.find(c=>c.id===id); state.modal="detalle"; render(); }
+function openEditar_id(id){ const c=citas.find(x=>x.id===id); state.form={...c}; state.selectedCita=c; state.modal="editar"; render(); }
+function prevMonth(){ if(state.currentMonth===0){state.currentMonth=11;state.currentYear--;}else state.currentMonth--; render(); }
+function nextMonth(){ if(state.currentMonth===11){state.currentMonth=0;state.currentYear++;}else state.currentMonth++; render(); }
+function prevWeek(){ const d=new Date(state.weekStart); d.setDate(d.getDate()-7); state.weekStart=d; render(); }
+function nextWeek(){ const d=new Date(state.weekStart); d.setDate(d.getDate()+7); state.weekStart=d; render(); }
+
+// ─── INIT ─────────────────────────────────────────────────
+window.addEventListener("load", ()=>{
+  const interval = setInterval(()=>{
+    if(window.google?.accounts?.oauth2){ clearInterval(interval); initAuth(); }
+  },200);
+});
+render();
+</script>
+</body>
+</html>
